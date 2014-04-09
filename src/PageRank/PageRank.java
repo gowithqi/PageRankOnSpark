@@ -1,5 +1,9 @@
 package PageRank;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -13,31 +17,46 @@ import scala.Tuple2;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.io.IOException;
 import java.io.Serializable;
 
 public class PageRank {
 	private static int k;
 	
-	private static class myComp implements Comparator<Tuple2<Integer, Double>>, Serializable {
+	private static class myComp implements Comparator<Tuple2<String, Double>>, Serializable {
 
 		@Override
-		public int compare(Tuple2<Integer, Double> o1,
-				Tuple2<Integer, Double> o2) {
+		public int compare(Tuple2<String, Double> o1,
+				Tuple2<String, Double> o2) {
 			return -1 * (Double.compare(o1._2(), o2._2()));
 		}
 		
 	}
-	private static class buildRank extends PairFunction<String, Integer, Double> {
+	private static class readPage extends PairFunction<String, Integer, String> {
+		private int n;
+		public readPage (int _n) {
+			n = _n;
+		}
+		@Override
+		public Tuple2<Integer, String> call(String arg0)
+				throws Exception {
+			if (arg0.length() == 0) return new Tuple2<Integer, String> (0, "nothing");
+			String[] strings = arg0.split(" ");
+			return new Tuple2<Integer, String> (Integer.parseInt(strings[0]), strings[1]);   //need to modify
+		}
+	}
+	
+	private static class buildRank extends Function<String, Double>{
 		private int n;
 		public buildRank (int _n) {
 			n = _n;
 		}
 		@Override
-		public Tuple2<Integer, Double> call(String arg0)
-				throws Exception {
-			String[] strings = arg0.split(" ");
-			return new Tuple2<Integer, Double> (Integer.parseInt(strings[0]), 1.0 / n);   //need to modify
+		public Double call(String arg0) throws Exception {
+			// TODO Auto-generated method stub
+			return new Double(1.0 / n);
 		}
+		
 	}
 	private static class sum extends Function2<Double, Double, Double> {
 
@@ -61,7 +80,7 @@ public class PageRank {
 			return arg0 * beta + (1-beta) / n;
 		}
 	}
-	public static void main(String[] args) {
+	public static void main(String[] args) throws IOException {
 		if (args.length != 4) {
 			System.out.println("Usage: PageRank <URL number> <para> <iterate time> <matrixs divide>");
 			System.exit(1);
@@ -75,20 +94,23 @@ public class PageRank {
 				System.getenv("SPARK_HOME"), JavaSparkContext.jarOfClass(PageRank.class));
 		
 		ArrayList<JavaPairRDD<Integer, Double>> rank = new ArrayList<JavaPairRDD<Integer, Double>>(k);
+		ArrayList<JavaPairRDD<Integer, String>> page = new ArrayList<JavaPairRDD<Integer, String>>(k);
 		for (int i = 0; i < k; i++) {
-			rank.add(i, ctx.textFile("/user/zzq/data/vector_" + String.valueOf(i+1)).map(new buildRank(n)));
+			page.add(i, ctx.textFile("/user/zzq/data/vector_" + String.valueOf(i+1)).map(new readPage(n)));
+			rank.add(i, page.get(i).mapValues(new buildRank(n)));
 		}
 		
 		ArrayList<ArrayList<JavaPairRDD<Integer, List<Integer>>>> matrixs = new ArrayList<ArrayList<JavaPairRDD<Integer, List<Integer>>>>(k);
 		for (int i = 0; i < k; i++) {
 			matrixs.add(i, new ArrayList<JavaPairRDD<Integer, List<Integer>>>(k));
 			for (int j = 0; j < k; j++) {
-				matrixs.get(i).add(j, ctx.textFile("/user/zzq/smallMs/SmallMatrix_" + String.valueOf(i+1) + "_" + String.valueOf(j+1)).map(
+				matrixs.get(i).add(j, ctx.textFile("/user/zzq/matrixs/SmallMatrix_" + String.valueOf(i+1) + "_" + String.valueOf(j+1)).map(
 						new PairFunction<String, Integer, List<Integer>>(){
 							@Override
 							public Tuple2<Integer, List<Integer>> call(
 									String arg0) throws Exception {
 								// TODO Auto-generated method stub
+								if (arg0.length() == 0) return null;
 								String[] strings = arg0.split(" ");
 								ArrayList<Integer> value = new ArrayList<Integer>();
 								for (int i = 1; i < strings.length; i++) {
@@ -129,19 +151,27 @@ public class PageRank {
 					contribs.get(0).set(j, contribs.get(0).get(j).union(contribs.get(i).get(j)));
 				}
 				rank.set(j, contribs.get(0).get(j).reduceByKey(new sum()).mapValues(new updateRank(n, beta)));
+				System.out.println(rank.get(j).first()._1().toString());
 			}
 		}
 		
 		for (int i = 1; i < k; i++) {
 			rank.set(0, rank.get(i).union(rank.get(0)));
+			page.set(0, page.get(i).union(page.get(0)));
 		}
 		
 		int top_num = (n > 100? 100 : 4);
-		List<Tuple2<Integer, Double>> output = rank.get(0).takeOrdered(top_num, new myComp());
-		for (Tuple2<?, ?> tuple: output) {
-			System.out.println(tuple._1() + "___"  +tuple._2());
+		List<Tuple2<String, Double>> output = page.get(0).join(rank.get(0)).values().takeOrdered(top_num, new myComp());
+//		List<Tuple2<Integer, Double>> output = rank.get(0).takeOrdered(top_num, new myComp());
+		Configuration conf = new Configuration();
+		FileSystem fs = FileSystem.get(conf);
+		Path dir = new Path("/user/zzq/output");
+		FSDataOutputStream outFile = fs.create(dir, true);
+		for (Tuple2<String, Double> tuple: output) {
+			outFile.writeBytes(tuple._1() + "___"  + tuple._2().toString() + "\n");
 		}
-				
+		outFile.close();
+		
 		System.exit(0);
 	}
 
