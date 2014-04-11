@@ -123,6 +123,14 @@ public class PageRank {
 			}
 		}
 		
+		for (int i = 1; i < k; i++) {
+			page.set(0, page.get(i).union(page.get(0)));
+		}
+		page.get(0).cache();
+		
+		int top_num = (n > 100? 100 : 4);
+		Configuration conf = new Configuration();
+		FileSystem fs = FileSystem.get(conf);
 		for (int count = 0; count < iterate_time; count++ ) {
 			ArrayList<ArrayList<JavaPairRDD<Integer, Double>>> contribs = new ArrayList<ArrayList<JavaPairRDD<Integer, Double>>>(k);
 			for (int i = 0; i < k; i++) {
@@ -147,30 +155,42 @@ public class PageRank {
 			}
 			
 			for (int j = 0; j < k; j++) {
+				JavaPairRDD<Integer, Double> tmp = contribs.get(0).get(j);
 				for (int i = 1; i < k; i++) {
-					contribs.get(0).set(j, contribs.get(0).get(j).union(contribs.get(i).get(j)));
+					tmp = tmp.union(contribs.get(i).get(j));
 				}
-				rank.set(j, contribs.get(0).get(j).reduceByKey(new sum()).mapValues(new updateRank(n, beta)));
-				System.out.println(rank.get(j).first()._1().toString());
+				rank.set(j, tmp.reduceByKey(new sum()).mapValues(new updateRank(n, beta)));
 			}
+			
+			JavaPairRDD<Integer, Double> allRank = rank.get(0);
+			for (int i = 1; i < k; i++) {
+				allRank = allRank.union(rank.get(i));
+			}
+			
+			List<Tuple2<String, Double>> output = page.get(0).join(allRank).values().takeOrdered(top_num, new myComp());
+			Path dir = new Path("/user/zzq/output_" + args[1] + "_" + String.valueOf(count));
+			FSDataOutputStream outFile = fs.create(dir, true);
+			for (Tuple2<String, Double> tuple: output) {
+				outFile.writeBytes(tuple._1() + "___"  + tuple._2().toString() + "\n");
+			}
+			outFile.close();
+			
 		}
+//		
+//		for (int i = 1; i < k; i++) {
+//			rank.set(0, rank.get(i).union(rank.get(0)));
+//			page.set(0, page.get(i).union(page.get(0)));
+//		}
 		
-		for (int i = 1; i < k; i++) {
-			rank.set(0, rank.get(i).union(rank.get(0)));
-			page.set(0, page.get(i).union(page.get(0)));
-		}
-		
-		int top_num = (n > 100? 100 : 4);
-		List<Tuple2<String, Double>> output = page.get(0).join(rank.get(0)).values().takeOrdered(top_num, new myComp());
-//		List<Tuple2<Integer, Double>> output = rank.get(0).takeOrdered(top_num, new myComp());
-		Configuration conf = new Configuration();
-		FileSystem fs = FileSystem.get(conf);
-		Path dir = new Path("/user/zzq/output");
-		FSDataOutputStream outFile = fs.create(dir, true);
-		for (Tuple2<String, Double> tuple: output) {
-			outFile.writeBytes(tuple._1() + "___"  + tuple._2().toString() + "\n");
-		}
-		outFile.close();
+//		List<Tuple2<String, Double>> output = page.get(0).join(rank.get(0)).values().takeOrdered(top_num, new myComp());
+//		Configuration conf = new Configuration();
+//		FileSystem fs = FileSystem.get(conf);
+//		Path dir = new Path("/user/zzq/output");
+//		FSDataOutputStream outFile = fs.create(dir, true);
+//		for (Tuple2<String, Double> tuple: output) {
+//			outFile.writeBytes(tuple._1() + "___"  + tuple._2().toString() + "\n");
+//		}
+//		outFile.close();
 		
 		System.exit(0);
 	}
